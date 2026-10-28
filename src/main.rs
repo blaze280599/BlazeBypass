@@ -77,10 +77,15 @@ impl App {
     }
 
     fn parsed_links(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
         let mut links: Vec<String> = Vec::new();
         for token in self.input.split_whitespace() {
+            // Skip stray words like "Link:" that can't be a URL.
+            if !token.contains('.') {
+                continue;
+            }
             let link = if token.contains("://") { token.to_string() } else { format!("https://{token}") };
-            if !links.contains(&link) {
+            if seen.insert(link.clone()) {
                 links.push(link);
             }
         }
@@ -111,6 +116,8 @@ impl App {
             self.show_toast(ctx, String::from("Add your API key first"));
             return;
         }
+        // Reset progress and row animations left over from the previous run.
+        ctx.clear_animations();
         let now = ctx.input(|i| i.time);
         self.rows = links
             .iter()
@@ -154,8 +161,13 @@ impl App {
             return;
         }
         let dir = results_dir();
-        let name = chrono::Local::now().format("bypass_%Y-%m-%d_%H-%M-%S.txt").to_string();
-        let path = dir.join(name);
+        let stem = chrono::Local::now().format("bypass_%Y-%m-%d_%H-%M-%S").to_string();
+        let mut path = dir.join(format!("{stem}.txt"));
+        let mut n = 2;
+        while path.exists() {
+            path = dir.join(format!("{stem}_{n}.txt"));
+            n += 1;
+        }
         let mut content = urls.join("\r\n");
         content.push_str("\r\n");
         match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, content)) {
@@ -658,10 +670,13 @@ fn results_dir() -> PathBuf {
 
 /// Reads the key from `BYPASS_VIP_API_KEY`, falling back to `api_key.txt` next to the exe.
 fn load_api_key() -> String {
+    // Notepad can save with a UTF-8 BOM, which would make the header value invalid.
+    let clean = |k: String| k.trim().trim_start_matches('\u{feff}').trim().to_string();
     std::env::var("BYPASS_VIP_API_KEY")
         .ok()
-        .or_else(|| std::fs::read_to_string(exe_dir().join("api_key.txt")).ok())
-        .map(|k| k.trim().to_string())
+        .map(clean)
+        .filter(|k| !k.is_empty())
+        .or_else(|| std::fs::read_to_string(exe_dir().join("api_key.txt")).ok().map(clean))
         .unwrap_or_default()
 }
 

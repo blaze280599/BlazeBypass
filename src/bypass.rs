@@ -82,6 +82,12 @@ pub fn spawn(links: Vec<String>, api_key: String, refresh: bool, tx: Sender<Even
 
 fn bypass_one(agent: &ureq::Agent, limiter: &RateLimiter, endpoint: &str, api_key: &str, link: &str) -> Result<String, String> {
     let mut last_error = String::from("Unknown error");
+    // Back off before a retry, but don't wait after the final attempt.
+    let backoff = |attempt: u32| {
+        if attempt + 1 < MAX_ATTEMPTS {
+            thread::sleep(Duration::from_secs(2 << attempt));
+        }
+    };
     for attempt in 0..MAX_ATTEMPTS {
         limiter.acquire();
         let response = agent.get(endpoint).header("x-api-key", api_key).query("url", link).call();
@@ -89,7 +95,7 @@ fn bypass_one(agent: &ureq::Agent, limiter: &RateLimiter, endpoint: &str, api_ke
             Ok(r) => r,
             Err(e) => {
                 last_error = format!("Network error: {e}");
-                thread::sleep(Duration::from_secs(2 << attempt));
+                backoff(attempt);
                 continue;
             }
         };
@@ -103,7 +109,9 @@ fn bypass_one(agent: &ureq::Agent, limiter: &RateLimiter, endpoint: &str, api_ke
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or(10);
             last_error = String::from("Rate limited");
-            thread::sleep(Duration::from_secs(reset.clamp(1, 60)));
+            if attempt + 1 < MAX_ATTEMPTS {
+                thread::sleep(Duration::from_secs(reset.clamp(1, 60)));
+            }
             continue;
         }
 
@@ -112,13 +120,15 @@ fn bypass_one(agent: &ureq::Agent, limiter: &RateLimiter, endpoint: &str, api_ke
             Ok(v) => v,
             Err(_) if status >= 500 => {
                 last_error = format!("Server error ({status})");
-                thread::sleep(Duration::from_secs(2 << attempt));
+                backoff(attempt);
                 continue;
             }
             Err(_) => return Err(format!("Unexpected response ({status})")),
         };
 
-        if json["status"].as_str() == Some("success") || (200..300).contains(&status) {
+        let api_status = json["status"].as_str();
+        let succeeded = api_status == Some("success") || ((200..300).contains(&status) && api_status != Some("error"));
+        if succeeded {
             if let Some(url) = extract_url(&json) {
                 return Ok(url);
             }
@@ -127,7 +137,7 @@ fn bypass_one(agent: &ureq::Agent, limiter: &RateLimiter, endpoint: &str, api_ke
         let message = json["message"].as_str().or(json["error"].as_str()).unwrap_or("Bypass failed");
         if matches!(status, 502..=504) {
             last_error = message.to_string();
-            thread::sleep(Duration::from_secs(2 << attempt));
+            backoff(attempt);
             continue;
         }
         return Err(message.to_string());
