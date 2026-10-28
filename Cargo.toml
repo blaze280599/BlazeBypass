@@ -1,0 +1,17 @@
+[package]
+name = "blaze-bypass"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
+serde_json = "1.0.154"
+ureq = "3.5.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
